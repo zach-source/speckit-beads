@@ -9,11 +9,12 @@
     "feature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "title", "summary", "directory"],
+      "required": ["key", "title", "summary", "acceptance_criteria", "directory"],
       "properties": {
         "key": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
         "title": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1},
+        "acceptance_criteria": {"type": "string", "minLength": 1},
         "directory": {"type": "string", "minLength": 1},
         "priority": {"type": "integer", "minimum": 0, "maximum": 4, "default": 1}
       }

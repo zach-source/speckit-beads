@@ -16,6 +16,7 @@ Spec Kit remains authoritative for requirements and design. Beads becomes author
 - `speckit.beads.ready` selects dependency-ready work and restores the exact cited Spec Kit context.
 - `speckit.beads.implement` implements through the Beads lifecycle: ready, claim, validate, and close.
 - `speckit.beads.render` optionally generates `tasks.md` from Beads for core commands such as `speckit.analyze` that still require it.
+- `speckit.beads.status` projects the authoritative dependency edges into current readiness, future execution waves, and unresolved blockers.
 
 The optional `after_plan` hook offers to create the Beads graph immediately after technical planning. An optional `before_analyze` hook renders a fresh compatibility view for the core analyzer.
 
@@ -31,7 +32,16 @@ Stable identities prevent churn:
 
 Reconciliation updates planning fields while preserving execution status, human labels, non-Spec-Kit metadata, and external dependencies. Missing tasks are reported as stale; they are never automatically closed or deleted.
 
-Each task stores `metadata.speckit.source_refs`, linking it to the relevant specification, plan, research decision, data entity, or contract. The parent epic stores the complete feature artifact map.
+The parent feature epic stores:
+
+- the complete `spec.md` snapshot in its description;
+- `plan.md`, research, data model, contracts, quickstart, and constitution snapshots in its design field;
+- measurable feature success criteria in acceptance criteria;
+- artifact SHA-256 hashes and the last reconciled DAG in metadata.
+
+Each task stores its full description, acceptance criteria, phase/story/dependency information, and relevant source excerpts. `metadata.speckit.source_refs` links back to the originating specification, plan, research decision, data entity, or contract.
+
+The dependency edges between Beads issues are the authoritative executable DAG. Run `speckit.beads.status` to see work that can complete now and the waves unlocked afterward.
 
 ## Install
 

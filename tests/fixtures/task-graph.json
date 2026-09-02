@@ -3,6 +3,7 @@
     "key": "001-example",
     "title": "Example Feature",
     "summary": "Implement the example feature described by the specification.",
+    "acceptance_criteria": "A valid request creates an example that satisfies FR-001.",
     "directory": "specs/001-example",
     "priority": 1
   },
@@ -48,4 +49,3 @@
     }
   ]
 }
-

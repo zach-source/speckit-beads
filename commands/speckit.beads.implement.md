@@ -14,7 +14,7 @@ Execute the current Spec Kit feature from Beads. Do not require or update `tasks
 2. Inspect every file under `FEATURE_DIR/checklists/` without modifying it. If any checklist contains unchecked items, report the counts and ask before proceeding.
 3. Run `bd ready --json`. Keep tasks labeled both `speckit` and the current feature label.
 4. Select the highest-priority ready task; break ties by `metadata.speckit.display_id`. If the user supplied a Beads ID, verify that task is ready instead.
-5. Inspect it with `bd show <id> --json`, load the exact files/sections in `metadata.speckit.source_refs`, and load `spec.md`, `plan.md`, and the constitution.
+5. Inspect it with `bd show <id> --json`. Use its stored description, design context, acceptance criteria, notes, and source references. Inspect the parent epic for the stored specification and technical design; verify source artifacts against their hashes when the checkout is available.
 6. Atomically claim it with `bd update <id> --claim` before editing.
 7. Implement only that task's scope, respecting its acceptance criteria and the technical plan. Run the relevant focused tests and quality gates.
 8. On success, close it with `bd close <id> --reason "Implemented and validated"`. On failure or a blocker, leave it open or in-progress, record the blocker or discovered task in Beads, and report it.
@@ -26,4 +26,3 @@ Rules:
 - Create discovered follow-up work in Beads and wire its dependencies.
 - Do not maintain a parallel Markdown checklist.
 - Do not commit or push unless separately authorized.
-

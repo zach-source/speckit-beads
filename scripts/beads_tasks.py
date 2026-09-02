@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,7 @@ class TaskGraph:
     feature_key: str
     feature_title: str
     feature_summary: str
+    feature_acceptance_criteria: str
     feature_dir: str
     feature_priority: int
     artifacts: dict[str, Any]
@@ -274,6 +276,9 @@ def parse_graph(project_root: Path, payload: Any) -> TaskGraph:
         feature_key=feature_key,
         feature_title=require_string(feature.get("title"), "feature.title"),
         feature_summary=require_string(feature.get("summary"), "feature.summary"),
+        feature_acceptance_criteria=require_string(
+            feature.get("acceptance_criteria"), "feature.acceptance_criteria"
+        ),
         feature_dir=feature_dir,
         feature_priority=require_priority(feature.get("priority", 1), "feature.priority"),
         artifacts=artifacts,
@@ -414,12 +419,116 @@ def task_labels(graph: TaskGraph, task: TaskSpec) -> list[str]:
     return sorted(labels)
 
 
-def task_description(task: TaskSpec) -> str:
+def read_artifact(project_root: Path, ref: str) -> str:
+    path = safe_existing_path(project_root, ref, "artifact reference")
+    if not path.is_file():
+        raise TaskGraphError(f"artifact reference must be a file: {ref}")
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
+def artifact_refs(graph: TaskGraph) -> list[str]:
+    refs: list[str] = []
+    for name in ("spec", "plan", "research", "data_model", "quickstart", "constitution"):
+        value = graph.artifacts.get(name)
+        if isinstance(value, str):
+            refs.append(value)
+    refs.extend(graph.artifacts.get("contracts", []))
+    return refs
+
+
+def artifact_digests(project_root: Path, graph: TaskGraph) -> dict[str, str]:
+    return {
+        ref: f"sha256:{hashlib.sha256(safe_existing_path(project_root, ref, 'artifact reference').read_bytes()).hexdigest()}"
+        for ref in artifact_refs(graph)
+    }
+
+
+def artifact_snapshot(project_root: Path, ref: str, heading: str) -> str:
+    return f"## {heading}\n\nSource: `{ref}`\n\n{read_artifact(project_root, ref).rstrip()}"
+
+
+def epic_description(project_root: Path, graph: TaskGraph) -> str:
+    return (
+        f"{graph.feature_summary}\n\n"
+        f"---\n\n"
+        f"# Stored Spec Kit specification\n\n"
+        f"Source: `{graph.artifacts['spec']}`\n\n"
+        f"{read_artifact(project_root, graph.artifacts['spec']).rstrip()}"
+    )
+
+
+def epic_design(project_root: Path, graph: TaskGraph) -> str:
+    sections = [artifact_snapshot(project_root, graph.artifacts["plan"], "Implementation plan")]
+    labels = {
+        "research": "Research and decisions",
+        "data_model": "Data model",
+        "quickstart": "Quickstart and validation",
+        "constitution": "Project constitution",
+    }
+    for name, heading in labels.items():
+        ref = graph.artifacts.get(name)
+        if isinstance(ref, str):
+            sections.append(artifact_snapshot(project_root, ref, heading))
+    for ref in graph.artifacts.get("contracts", []):
+        sections.append(artifact_snapshot(project_root, ref, f"Contract: {Path(ref).name}"))
+    return "\n\n---\n\n".join(sections)
+
+
+def extract_fragment(text: str, fragment: str) -> str:
+    lines = text.splitlines()
+    normalized = fragment.lower().replace("-", " ").strip()
+    for index, line in enumerate(lines):
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if not heading:
+            continue
+        title = heading.group(2).lower().replace("-", " ").strip()
+        if normalized not in title and title not in normalized:
+            continue
+        level = len(heading.group(1))
+        end = len(lines)
+        for following in range(index + 1, len(lines)):
+            next_heading = re.match(r"^(#{1,6})\s+", lines[following])
+            if next_heading and len(next_heading.group(1)) <= level:
+                end = following
+                break
+        return "\n".join(lines[index:end]).strip()
+    for index, line in enumerate(lines):
+        if fragment.lower() in line.lower():
+            return "\n".join(lines[max(0, index - 2) : min(len(lines), index + 4)]).strip()
+    return text.strip()
+
+
+def source_excerpt(project_root: Path, ref: str) -> str:
+    path_ref, separator, fragment = ref.partition("#")
+    text = read_artifact(project_root, path_ref)
+    content = extract_fragment(text, fragment) if separator and fragment else text.strip()
+    return f"## `{ref}`\n\n{content}"
+
+
+def task_design(project_root: Path, task: TaskSpec) -> str:
+    return "# Stored implementation context\n\n" + "\n\n---\n\n".join(
+        source_excerpt(project_root, ref) for ref in task.source_refs
+    )
+
+
+def task_notes(task: TaskSpec) -> str:
+    dependencies = ", ".join(task.dependencies) if task.dependencies else "none"
     sources = "\n".join(f"- {ref}" for ref in task.source_refs)
-    return f"{task.description}\n\nSpec Kit sources:\n{sources}"
+    return (
+        f"Spec Kit display ID: {task.display_id}\n"
+        f"Phase: {task.phase}\n"
+        f"Story: {task.story or 'none'}\n"
+        f"Parallel-safe: {'yes' if task.parallel else 'no'}\n"
+        f"Depends on task keys: {dependencies}\n\n"
+        f"Source references:\n{sources}"
+    )
 
 
-def desired_epic(graph: TaskGraph, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+def desired_epic(
+    project_root: Path,
+    graph: TaskGraph,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     existing = existing or {}
     metadata = issue_metadata(existing)
     metadata["speckit"] = {
@@ -427,11 +536,22 @@ def desired_epic(graph: TaskGraph, existing: dict[str, Any] | None = None) -> di
         "feature": graph.feature_key,
         "feature_dir": graph.feature_dir,
         "artifacts": graph.artifacts,
+        "artifact_digests": artifact_digests(project_root, graph),
+        "planned_dag": {
+            "dependencies": {task.key: list(task.dependencies) for task in graph.tasks},
+            "topological_order": [task.key for task in topological_order(graph.tasks)],
+        },
     }
     return {
         "title": f"Spec Kit: {graph.feature_title}",
-        "description": graph.feature_summary,
-        "acceptance_criteria": "All required child tasks are closed and the feature satisfies its Spec Kit success criteria.",
+        "description": epic_description(project_root, graph),
+        "design": epic_design(project_root, graph),
+        "acceptance_criteria": graph.feature_acceptance_criteria,
+        "notes": (
+            f"Stored from {len(artifact_refs(graph))} Spec Kit artifacts. "
+            f"Execution DAG contains {len(graph.tasks)} tasks and "
+            f"{sum(len(task.dependencies) for task in graph.tasks)} dependency edges."
+        ),
         "priority": graph.feature_priority,
         "spec_id": graph.artifacts["spec"],
         "labels": merge_labels(existing.get("labels", []), ["speckit", f"speckit:{graph.feature_key}"]),
@@ -439,7 +559,12 @@ def desired_epic(graph: TaskGraph, existing: dict[str, Any] | None = None) -> di
     }
 
 
-def desired_task(graph: TaskGraph, task: TaskSpec, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+def desired_task(
+    project_root: Path,
+    graph: TaskGraph,
+    task: TaskSpec,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     existing = existing or {}
     metadata = issue_metadata(existing)
     metadata["speckit"] = {
@@ -450,12 +575,15 @@ def desired_task(graph: TaskGraph, task: TaskSpec, existing: dict[str, Any] | No
         "phase": task.phase,
         "story": task.story,
         "parallel": task.parallel,
+        "dependency_keys": list(task.dependencies),
         "source_refs": list(task.source_refs),
     }
     return {
         "title": f"{task.display_id}: {task.title}",
-        "description": task_description(task),
+        "description": task.description,
+        "design": task_design(project_root, task),
         "acceptance_criteria": task.acceptance_criteria,
+        "notes": task_notes(task),
         "priority": task.priority,
         "spec_id": task.source_refs[0],
         "labels": merge_labels(existing.get("labels", []), task_labels(graph, task)),
@@ -464,7 +592,15 @@ def desired_task(graph: TaskGraph, task: TaskSpec, existing: dict[str, Any] | No
 
 
 def issue_needs_update(issue: dict[str, Any], desired: dict[str, Any]) -> bool:
-    for field in ("title", "description", "acceptance_criteria", "priority", "spec_id"):
+    for field in (
+        "title",
+        "description",
+        "design",
+        "acceptance_criteria",
+        "notes",
+        "priority",
+        "spec_id",
+    ):
         if issue.get(field) != desired[field]:
             return True
     if sorted(issue.get("labels", [])) != desired["labels"]:
@@ -486,8 +622,12 @@ def update_issue(
         desired["title"],
         "--description",
         desired["description"],
+        "--design",
+        desired["design"],
         "--acceptance",
         desired["acceptance_criteria"],
+        "--notes",
+        desired["notes"],
         "--priority",
         str(desired["priority"]),
         "--type",
@@ -519,8 +659,12 @@ def create_issue(
         str(desired["priority"]),
         "--description",
         desired["description"],
+        "--design",
+        desired["design"],
         "--acceptance",
         desired["acceptance_criteria"],
+        "--notes",
+        desired["notes"],
         "--external-ref",
         external_ref,
         "--spec-id",
@@ -557,7 +701,11 @@ def build_reconciliation(graph: TaskGraph, beads: Beads) -> tuple[dict[str, Any]
         for issue in managed
     }
     epic = by_ref.get(epic_ref)
-    epic_action = "create" if not epic else ("update" if issue_needs_update(epic, desired_epic(graph, epic)) else "existing")
+    epic_action = "create" if not epic else (
+        "update"
+        if issue_needs_update(epic, desired_epic(beads.project_root, graph, epic))
+        else "existing"
+    )
 
     create: list[str] = []
     update: list[str] = []
@@ -590,7 +738,7 @@ def build_reconciliation(graph: TaskGraph, beads: Beads) -> tuple[dict[str, Any]
                 )
         if not issue:
             create.append(task.key)
-        elif issue_needs_update(issue, desired_task(graph, task, issue)) or (
+        elif issue_needs_update(issue, desired_task(beads.project_root, graph, task, issue)) or (
             epic and issue.get("parent") != epic.get("id")
         ):
             update.append(task.key)
@@ -646,7 +794,7 @@ def apply_reconciliation(
     task_refs: dict[str, str] = state["task_refs"]
 
     epic = by_ref.get(epic_ref)
-    desired = desired_epic(graph, epic)
+    desired = desired_epic(beads.project_root, graph, epic)
     if not epic:
         epic_id = create_issue(beads, desired, epic_ref, "epic")
         epic = {"id": epic_id, "external_ref": epic_ref}
@@ -661,7 +809,7 @@ def apply_reconciliation(
     for task in graph.tasks:
         ref = task_refs[task.key]
         issue = by_ref.get(ref)
-        desired = desired_task(graph, task, issue)
+        desired = desired_task(beads.project_root, graph, task, issue)
         if not issue:
             issue_id = create_issue(beads, desired, ref, "task", epic_id)
             issue = {"id": issue_id, "external_ref": ref}
@@ -800,6 +948,143 @@ def render_markdown(beads: Beads, feature_key: str) -> tuple[str, dict[str, Any]
     return "\n".join(lines), epic
 
 
+def task_summary(issue: dict[str, Any]) -> dict[str, Any]:
+    speckit = issue_metadata(issue).get("speckit", {})
+    return {
+        "id": issue["id"],
+        "display_id": speckit.get("display_id"),
+        "task_key": speckit.get("task_key"),
+        "phase": speckit.get("phase"),
+        "story": speckit.get("story"),
+        "parallel": speckit.get("parallel", False),
+        "title": issue["title"],
+        "status": issue.get("status"),
+        "priority": issue.get("priority"),
+    }
+
+
+def task_sort_key(issue: dict[str, Any]) -> tuple[int, int]:
+    priority = issue.get("priority")
+    return (
+        priority if isinstance(priority, int) else 4,
+        display_id_number(issue),
+    )
+
+
+def dag_status(beads: Beads, feature_key: str) -> dict[str, Any]:
+    epic_ref = f"speckit:{feature_key}"
+    summaries = beads.list_all()
+    epic_summary = next(
+        (issue for issue in summaries if issue.get("external_ref") == epic_ref), None
+    )
+    if not epic_summary:
+        raise TaskGraphError(f"no Beads epic found for feature {feature_key}")
+    epic = beads.show(epic_summary["id"])
+    tasks = [
+        beads.show(issue["id"])
+        for issue in summaries
+        if isinstance(issue.get("external_ref"), str)
+        and issue["external_ref"].startswith(f"{epic_ref}:")
+        and issue.get("issue_type") == "task"
+    ]
+    if not tasks:
+        raise TaskGraphError(f"no Beads tasks found for feature {feature_key}")
+
+    by_ref = {issue["external_ref"]: issue for issue in tasks}
+    internal_dependencies: dict[str, set[str]] = {}
+    external_blockers: dict[str, list[dict[str, Any]]] = {}
+    for issue in tasks:
+        internal: set[str] = set()
+        external: list[dict[str, Any]] = []
+        for dependency in beads.dependencies(issue["id"]):
+            ref = dependency_ref(dependency)
+            if ref in by_ref:
+                internal.add(ref)
+            elif dependency.get("status") != "closed":
+                external.append(
+                    {
+                        "id": dependency.get("id"),
+                        "title": dependency.get("title"),
+                        "status": dependency.get("status"),
+                    }
+                )
+        internal_dependencies[issue["external_ref"]] = internal
+        external_blockers[issue["external_ref"]] = external
+
+    closed_refs = {
+        ref for ref, issue in by_ref.items() if issue.get("status") == "closed"
+    }
+    closed = sorted((by_ref[ref] for ref in closed_refs), key=task_sort_key)
+    completed = set(closed_refs)
+    remaining = {
+        ref
+        for ref, issue in by_ref.items()
+        if issue.get("status") != "closed"
+    }
+    waves: list[dict[str, Any]] = []
+    wave_number = 0
+    while remaining:
+        wave_refs = [
+            ref
+            for ref in remaining
+            if by_ref[ref].get("status") in {"open", "in_progress"}
+            and internal_dependencies[ref].issubset(completed)
+            and not external_blockers[ref]
+        ]
+        if not wave_refs:
+            break
+        wave_issues = sorted((by_ref[ref] for ref in wave_refs), key=task_sort_key)
+        waves.append(
+            {
+                "wave": wave_number,
+                "tasks": [task_summary(issue) for issue in wave_issues],
+            }
+        )
+        completed.update(wave_refs)
+        remaining.difference_update(wave_refs)
+        wave_number += 1
+
+    blocked: list[dict[str, Any]] = []
+    for ref in sorted(remaining, key=lambda value: task_sort_key(by_ref[value])):
+        issue = by_ref[ref]
+        internal = [
+            task_summary(by_ref[dependency])
+            for dependency in sorted(
+                internal_dependencies[ref] - completed,
+                key=lambda value: task_sort_key(by_ref[value]),
+            )
+        ]
+        blocked.append(
+            {
+                **task_summary(issue),
+                "blocked_by": internal,
+                "external_blockers": external_blockers[ref],
+                "state_blocker": (
+                    issue.get("status")
+                    if issue.get("status") not in {"open", "in_progress"}
+                    else None
+                ),
+            }
+        )
+
+    current_wave = waves[0]["tasks"] if waves else []
+    return {
+        "feature": feature_key,
+        "epic": {"id": epic["id"], "title": epic["title"], "status": epic.get("status")},
+        "counts": {
+            "total": len(tasks),
+            "closed": len(closed),
+            "remaining": len(tasks) - len(closed),
+            "ready_or_in_progress": len(current_wave),
+            "blocked": len(blocked),
+        },
+        "current": current_wave,
+        "waves": waves,
+        "blocked": blocked,
+        "closed": [task_summary(issue) for issue in closed],
+    }
+
+
 def safe_output_path(project_root: Path, output: Path, epic: dict[str, Any]) -> Path:
     metadata = issue_metadata(epic).get("speckit", {})
     feature_dir = metadata.get("feature_dir")
@@ -830,6 +1115,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     render_parser.add_argument("--feature", required=True)
     render_parser.add_argument("--output", type=Path)
     render_parser.add_argument("--apply", action="store_true")
+
+    status_parser = subparsers.add_parser("status", help="Show readiness and execution waves")
+    status_parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    status_parser.add_argument("--feature", required=True)
     return parser.parse_args(argv)
 
 
@@ -848,7 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reconcile":
             result = reconcile(project_root, args.graph, args.apply)
             print(json.dumps(result, indent=2, sort_keys=True))
-        else:
+        elif args.command == "render":
             markdown, epic = render_markdown(Beads(project_root), args.feature)
             if args.apply:
                 if not args.output:
@@ -858,6 +1147,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"feature": args.feature, "output": str(output)}, indent=2))
             else:
                 print(markdown, end="")
+        else:
+            print(json.dumps(dag_status(Beads(project_root), args.feature), indent=2, sort_keys=True))
     except (OSError, TaskGraphError) as exc:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1

@@ -3,8 +3,8 @@ schema_version: "1.0"
 extension:
   id: beads
   name: "Beads Execution Backend"
-  version: "0.2.0"
-  description: "Replaces Spec Kit task files with a Beads-backed planning and implementation workflow."
+  version: "0.3.0"
+  description: "Stores Spec Kit specifications, task context, and the executable dependency DAG in Beads."
   category: integration
   effect: read-write
   author: "Sidekick contributors"
@@ -36,6 +36,9 @@ provides:
     - name: speckit.beads.render
       file: commands/speckit.beads.render.md
       description: "Render an optional tasks.md compatibility view from Beads."
+    - name: speckit.beads.status
+      file: commands/speckit.beads.status.md
+      description: "Show Beads task readiness, blockers, and future execution waves."
   scripts:
     - name: speckit-beads-tasks
       file: scripts/beads_tasks.py

@@ -23,6 +23,7 @@ Replace the normal Spec Kit `tasks` step. Beads is the task-definition and execu
 Create a JSON object matching `.specify/extensions/beads/schemas/task-graph.schema.json`.
 
 - Use stable semantic task keys such as `create-user-model`, not array positions.
+- Put the feature's measurable success criteria into `feature.acceptance_criteria`; reconciliation stores them on the Beads epic.
 - Assign stable display IDs (`T001`, `T002`, …). Reuse IDs from matching existing Beads metadata. New IDs start after the highest existing ID.
 - Organize work into Setup, Foundational, one independently testable phase per user story, then Polish/Cross-Cutting.
 - Every task must name concrete files or components, have verifiable acceptance criteria, and cite one or more originating artifact references.
@@ -52,6 +53,8 @@ Write the graph to a temporary file outside the repository. It is a reconciliati
 
 4. Remove the temporary file.
 5. Run `bd dep cycles` and report the epic ID, created/updated/existing/stale tasks, and dependency changes.
+
+The reconciler stores the complete specification snapshot in the epic description, the plan and supporting artifacts in its design field, success criteria in acceptance criteria, content hashes and the planned DAG in metadata, and relevant source excerpts in each task's design field.
 
 ## Reconciliation rules
 

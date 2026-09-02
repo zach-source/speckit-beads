@@ -81,16 +81,45 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_status_does_not_trigger_update(self):
         graph = beads_tasks.parse_graph(PROJECT, graph_payload())
-        desired = beads_tasks.desired_task(graph, graph.tasks[0])
+        desired = beads_tasks.desired_task(PROJECT, graph, graph.tasks[0])
         issue = {**copy.deepcopy(desired), "status": "closed"}
 
         self.assertFalse(beads_tasks.issue_needs_update(issue, desired))
+
+    def test_epic_stores_spec_design_digests_and_planned_dag(self):
+        graph = beads_tasks.parse_graph(PROJECT, graph_payload())
+
+        epic = beads_tasks.desired_epic(PROJECT, graph)
+
+        self.assertIn("FR-001", epic["description"])
+        self.assertIn("Implementation Plan", epic["design"])
+        self.assertIn("Use the standard library", epic["design"])
+        self.assertEqual(
+            epic["acceptance_criteria"],
+            "A valid request creates an example that satisfies FR-001.",
+        )
+        speckit = epic["metadata"]["speckit"]
+        self.assertIn("specs/001-example/spec.md", speckit["artifact_digests"])
+        self.assertEqual(
+            speckit["planned_dag"]["dependencies"]["implement-create-example"],
+            ["create-example-model"],
+        )
+
+    def test_task_stores_relevant_source_context(self):
+        graph = beads_tasks.parse_graph(PROJECT, graph_payload())
+
+        task = beads_tasks.desired_task(PROJECT, graph, graph.tasks[0])
+
+        self.assertIn("An example has an identifier and name", task["design"])
+        self.assertIn("Create the model before the service", task["design"])
+        self.assertIn("Depends on task keys: none", task["notes"])
 
 
 class FakeBeads:
     def __init__(self, issues, dependencies):
         self._issues = issues
         self._dependencies = dependencies
+        self.project_root = PROJECT
 
     def list_all(self):
         return self._issues
@@ -106,13 +135,13 @@ class StableIdentityTests(unittest.TestCase):
     def test_reconciliation_rejects_display_id_churn(self):
         graph = beads_tasks.parse_graph(PROJECT, graph_payload())
         epic = {
-            **beads_tasks.desired_epic(graph),
+            **beads_tasks.desired_epic(PROJECT, graph),
             "id": "bd-epic",
             "external_ref": "speckit:001-example",
             "issue_type": "epic",
         }
         task = {
-            **beads_tasks.desired_task(graph, graph.tasks[0]),
+            **beads_tasks.desired_task(PROJECT, graph, graph.tasks[0]),
             "id": "bd-task",
             "external_ref": "speckit:001-example:create-example-model",
             "issue_type": "task",
@@ -173,6 +202,55 @@ class RenderTests(unittest.TestCase):
         self.assertIn("- [x] T001 Create model", markdown)
         self.assertIn("- [ ] T002 [P] [US1] Implement creation", markdown)
         self.assertIn("`T002` depends on `T001`", markdown)
+
+
+class DagStatusTests(unittest.TestCase):
+    def test_projects_current_and_future_execution_waves(self):
+        epic = {
+            "id": "bd-epic",
+            "title": "Spec Kit: Example Feature",
+            "external_ref": "speckit:001-example",
+            "issue_type": "epic",
+            "status": "open",
+            "metadata": {"speckit": {"feature_dir": "specs/001-example"}},
+        }
+
+        def task(number, key, status):
+            return {
+                "id": f"bd-{number}",
+                "title": f"T00{number}: Task {number}",
+                "external_ref": f"speckit:001-example:{key}",
+                "issue_type": "task",
+                "status": status,
+                "priority": 1,
+                "metadata": {
+                    "speckit": {
+                        "display_id": f"T00{number}",
+                        "task_key": key,
+                    }
+                },
+            }
+
+        first = task(1, "first", "closed")
+        second = task(2, "second", "open")
+        third = task(3, "third", "open")
+        fake = FakeBeads(
+            [epic, first, second, third],
+            {
+                "bd-2": [{**first, "dependency_type": "blocks"}],
+                "bd-3": [{**second, "dependency_type": "blocks"}],
+            },
+        )
+
+        status = beads_tasks.dag_status(fake, "001-example")
+
+        self.assertEqual([task["task_key"] for task in status["current"]], ["second"])
+        self.assertEqual(
+            [[task["task_key"] for task in wave["tasks"]] for wave in status["waves"]],
+            [["second"], ["third"]],
+        )
+        self.assertEqual(status["counts"]["closed"], 1)
+        self.assertEqual(status["counts"]["blocked"], 0)
 
 
 if __name__ == "__main__":
